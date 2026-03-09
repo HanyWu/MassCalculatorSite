@@ -1,4 +1,5 @@
-import { FormEvent, useState } from 'react'
+import type { FormEvent } from 'react'
+import { useState } from 'react'
 import { enumerateFormulas, formatNumber, formatPpm, parseFormula } from '../utils/massUtils'
 import type { FormulaCandidate } from '../utils/massUtils'
 
