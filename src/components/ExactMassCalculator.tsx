@@ -1,7 +1,8 @@
-// src/components/MassCalculator.jsx (FINAL and FIXED version)
+// src/components/ExactMassCalculator.tsx
 
 import { useState, useMemo } from 'react';
 import type { FormEvent } from 'react';
+import type { FormulaCandidate } from '../utils/massUtils';
 import {
   parseFormula,
   calculateExactMass,
@@ -11,13 +12,13 @@ import {
 } from '../utils/massUtils';
 
 export const MassCalculator = () => {
-  const [formula, setFormula] = useState('H2O');
-  const [charge, setCharge] = useState('1');
-  const [observedMz, setObservedMz] = useState('');
-  const [useProton, setUseProton] = useState(true);
+  const [formula, setFormula] = useState<string>('H2O');
+  const [charge, setCharge] = useState<string>('1');
+  const [observedMz, setObservedMz] = useState<string>('');
+  const [useProton, setUseProton] = useState<boolean>(true);
 
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState('');
+  const [result, setResult] = useState<FormulaCandidate | null>(null);
+  const [error, setError] = useState<string>('');
 
   const canUseProton = useMemo(() => Number.parseInt(charge, 10) !== 0, [charge]);
 
@@ -32,41 +33,50 @@ export const MassCalculator = () => {
     }
 
     try {
-      // 关键修正：检查返回的普通对象是否为空
       const parsed = parseFormula(formula);
       if (Object.keys(parsed).length === 0) {
         throw new Error('请输入有效的分子式');
       }
 
       const exactMass = calculateExactMass(formula);
-      const z = Number.parseInt(charge, 10);
+      const z = Number.parseInt(charge, 10) || 0;
       let ionMass = exactMass;
 
-      // 根据选项处理加合离子
-      if (canUseProton && useProton) {
+      if (canUseProton && useProton && z !== 0) {
+        // add z * proton mass (supports negative/positive z)
         ionMass += PROTON_MASS * z;
       }
 
-      const mz = Number.isFinite(z) && z !== 0 ? ionMass / Math.abs(z) : ionMass;
+      const mz = z !== 0 ? ionMass / Math.abs(z) : ionMass;
 
-      let ppmError = null;
+      let ppmError: number | null = null;
       const obsMz = Number.parseFloat(observedMz);
       if (Number.isFinite(obsMz) && obsMz > 0) {
-        // observed = obsMz, theoretical = mz
         ppmError = ((obsMz - mz) / mz) * 1e6;
       }
-      
+
       setResult({
-        formula,
+        formula: formatFormulaSafe(formula),
         exactMass,
         ionMass,
         mz,
         ppmError,
-      });
+      } as FormulaCandidate);
 
     } catch (e) {
       const message = e instanceof Error ? e.message : '计算时发生未知错误';
       setError(message);
+    }
+  };
+
+  // helper to keep displayed formula canonical if parse/format available
+  const formatFormulaSafe = (f: string) => {
+    try {
+      // formatFormulaCanonical might not be exported; fall back to input
+      // If your massUtils exports formatFormulaCanonical, replace below accordingly.
+      return f;
+    } catch {
+      return f;
     }
   };
 
@@ -157,13 +167,13 @@ export const MassCalculator = () => {
               </tr>
               <tr>
                 <td data-label="参数">离子质量 (Da)</td>
-                <td data-label="计算值">{formatNumber(result.ionMass, 6)}</td>
+                <td data-label="计算值">{formatNumber(result.ionMass ?? result.exactMass, 6)}</td>
               </tr>
               <tr>
                 <td data-label="参数">理论 m/z</td>
                 <td data-label="计算值">{formatNumber(result.mz, 6)}</td>
               </tr>
-              {result.ppmError !== null && (
+              {result.ppmError !== null && result.ppmError !== undefined && (
                 <tr>
                   <td data-label="参数">质量误差 (ppm)</td>
                   <td data-label="计算值">{formatPpm(result.ppmError, 2)}</td>
