@@ -1,226 +1,198 @@
-export type ParsedFormula = Record<string, number>
+// src/utils/massUtils.js (REVISED)
 
-export const ELEMENT_MASSES: Record<string, number> = {
-  C: 12.0,
+/* Constants */
+export const PROTON_MASS = 1.007276466621;
+
+export const ATOMIC_MASSES = {
   H: 1.00782503223,
+  C: 12.00000000000,
   N: 14.00307400443,
   O: 15.99491461957,
-  S: 31.9720711744,
-  P: 30.97376199842,
   F: 18.99840316273,
+  Na: 22.9897692820,
+  P: 30.97376199842,
+  S: 31.9720711744,
   Cl: 34.968852682,
-  Br: 78.9183376,
-  I: 126.9044719,
-  Na: 22.989769282,
   K: 38.9637064864,
-}
+  Br: 78.9183376,
+  I: 126.904473,
+  // Add other elements if needed
+};
 
-// 单质子质量（用于 [M + zH]^z+ 近似计算）
-export const PROTON_MASS = 1.00727646688
+/* Parse formula string into a plain object {El: count} */
+export const parseFormula = (formula) => {
+  if (!formula || typeof formula !== 'string') return {};
+  const elementMap = new Map();
+  const regex = /([A-Z][a-z]*)(\d*)/g;
+  const cleanedFormula = formula.replace(/[^A-Za-z0-9]/g, '');
+  let match;
 
-const ELEMENT_PATTERN = /([A-Z][a-z]?)(\d*)/g
-
-export function parseFormula(formula: string): ParsedFormula {
-  const trimmed = formula.trim()
-  if (!trimmed) {
-    throw new Error('分子式不能为空')
-  }
-
-  const result: ParsedFormula = {}
-  let match: RegExpExecArray | null
-  let consumed = ''
-
-  while ((match = ELEMENT_PATTERN.exec(trimmed)) !== null) {
-    const symbol = match[1]
-    const countStr = match[2]
-    const count = countStr ? Number.parseInt(countStr, 10) : 1
-
-    if (!Number.isFinite(count) || count <= 0) {
-      throw new Error(`元素 ${symbol} 的计数不合法`)
+  while ((match = regex.exec(cleanedFormula)) !== null) {
+    const [, element, countStr] = match;
+    if (ATOMIC_MASSES[element]) {
+      const count = countStr ? parseInt(countStr, 10) : 1;
+      elementMap.set(element, (elementMap.get(element) || 0) + count);
+    } else {
+      throw new Error(`分子式中包含未知或不支持的元素: ${element}`);
     }
+  }
+  return Object.fromEntries(elementMap);
+};
 
-    if (!(symbol in ELEMENT_MASSES)) {
-      throw new Error(`暂不支持的元素：${symbol}`)
+/* Calculate mass from counts object */
+const calculateMassFromCounts = (elementCounts) => {
+  let mass = 0;
+  if (!elementCounts || typeof elementCounts !== 'object') return 0;
+  for (const [element, count] of Object.entries(elementCounts)) {
+    const n = Number(count) || 0;
+    const m = ATOMIC_MASSES[element];
+    if (!m) throw new Error(`未知元素质量: ${element}`);
+    mass += m * n;
+  }
+  return mass;
+};
+
+/* Calculate exact neutral mass from formula string */
+export const calculateExactMass = (formula) => {
+  if (!formula) return 0;
+  const elementCounts = parseFormula(formula);
+  return calculateMassFromCounts(elementCounts);
+};
+
+/* Format formula into canonical order (C H N O P S ... then others) */
+export const formatFormulaCanonical = (formula) => {
+  const elementCounts = parseFormula(formula);
+  const order = ['C', 'H', 'N', 'O', 'P', 'S', 'F', 'Cl', 'Br', 'I'];
+  let result = '';
+
+  // Take from ordered list first
+  for (const el of order) {
+    if (elementCounts[el]) {
+      result += el + (elementCounts[el] > 1 ? elementCounts[el] : '');
+      delete elementCounts[el];
     }
-
-    result[symbol] = (result[symbol] ?? 0) + count
-    consumed += match[0]
   }
 
-  if (consumed.length !== trimmed.length) {
-    throw new Error('分子式格式不合法，请检查是否有多余字符')
+  // Append remaining elements alphabetically
+  const rest = Object.keys(elementCounts).sort();
+  for (const el of rest) {
+    const count = elementCounts[el];
+    if (count && count > 0) result += el + (count > 1 ? count : '');
   }
+  return result;
+};
 
-  return result
-}
+/* Calculate RDB (degree of unsaturation) */
+export const calculateRDB = (elementCounts) => {
+  const C = elementCounts.C || 0;
+  const H = elementCounts.H || 0;
+  const N = elementCounts.N || 0;
+  const P = elementCounts.P || 0;
+  const X = (elementCounts.F || 0) + (elementCounts.Cl || 0) + (elementCounts.Br || 0) + (elementCounts.I || 0);
 
-export function calculateExactMass(formula: string): number {
-  const parsed = parseFormula(formula)
-  let mass = 0
+  if (C === 0) return 'N/A';
+  const rdb = C - H / 2 - X / 2 + N / 2 + P / 2 + 1;
+  return Number.isInteger(rdb) ? rdb : Number(rdb.toFixed(1));
+};
 
-  for (const [symbol, count] of Object.entries(parsed)) {
-    mass += ELEMENT_MASSES[symbol] * count
-  }
+/* Enumerate candidate formulas within mass window
+   params: { elements, minCounts, maxCounts, targetMz, ppmWindow, charge, maxResults }
+*/
+// enumerateFormulas with RDB filtering (defaults: minRdb=-1, maxRdb=50)
+export const enumerateFormulas = ({
+  elements = [], minCounts = {}, maxCounts = {}, targetMz = 0, ppmWindow = 10,
+  charge = 1, maxResults = 100, useProton = false, minRdb = -1, maxRdb = 50,
+} = {}) => {
+  const z = Number(charge) || 0;
+  const absZ = Math.abs(z) || 0;
+  const targetMzNum = Number(targetMz) || 0;
+  const targetMass = (useProton && absZ > 0) ? (absZ * targetMzNum - z * PROTON_MASS) : targetMzNum;
+  const massTolerance = (targetMass * Number(ppmWindow || 0)) / 1e6;
+  const minMass = targetMass - massTolerance;
+  const maxMass = targetMass + massTolerance;
 
-  return mass
-}
+  const candidates = [];
+  const sortedElements = [...elements].sort((a, b) => (ATOMIC_MASSES[b] || 0) - (ATOMIC_MASSES[a] || 0));
 
-export function calculateTheoreticalMz(options: {
-  formula: string
-  charge: number
-  neutralLossMass?: number
-}): number {
-  const { formula, charge, neutralLossMass = 0 } = options
-  if (!Number.isFinite(charge) || charge === 0) {
-    throw new Error('电荷数必须为非零整数')
-  }
+  function search(elementIndex, currentCounts, currentMass) {
+    if (currentMass > maxMass || candidates.length >= maxResults) return;
 
-  const exactMass = calculateExactMass(formula)
-  const numerator = exactMass + charge * PROTON_MASS - neutralLossMass
-  return numerator / charge
-}
+    if (elementIndex >= sortedElements.length) {
+      if (currentMass >= minMass) {
+        for (const el in minCounts) {
+          if ((currentCounts[el] || 0) < (minCounts[el] || 0)) return;
+        }
 
-export function calculatePpmError(observed: number, theoretical: number): number {
-  if (!Number.isFinite(observed) || !Number.isFinite(theoretical) || theoretical === 0) {
-    return NaN
-  }
+        const formulaStr = Object.entries(currentCounts)
+          .filter(([, count]) => count > 0)
+          .map(([el, count]) => `${el}${count > 1 ? count : ''}`)
+          .join('');
+        if (!formulaStr) return;
 
-  return ((observed - theoretical) / theoretical) * 1e6
-}
+        const finalFormula = formatFormulaCanonical(formulaStr);
+        const exactMass = currentMass;
+        const ionMass = (useProton && z !== 0) ? exactMass + z * PROTON_MASS : exactMass;
+        const mz = (z === 0) ? ionMass : ionMass / Math.abs(z);
+        // observedMass (来自 targetMass) 与 exactMass (理论) 对比：use (observed - theoretical)/theoretical
+const ppmError = (targetMass > 0 && exactMass > 0) ? ((targetMass - exactMass) / exactMass) * 1e6 : null;
+        const rdbVal = calculateRDB(currentCounts);
+        // calculateRDB may return 'N/A' or a number/string; coerce to number or skip
+        if (rdbVal === 'N/A') return;
+        const rdb = Number(rdbVal);
+        if (!Number.isFinite(rdb)) return;
 
-export function formatNumber(value: number | null | undefined, digits = 5): string {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return '--'
-  }
-  return value.toFixed(digits)
-}
+        // RDB range filter
+        if (typeof minRdb === 'number' && rdb < minRdb) return;
+        if (typeof maxRdb === 'number' && rdb > maxRdb) return;
 
-export function formatPpm(value: number | null | undefined, digits = 2): string {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return '--'
-  }
-  return value.toFixed(digits)
-}
-
-export interface FormulaSearchOptions {
-  elements: string[]
-  minCounts: Record<string, number>
-  maxCounts: Record<string, number>
-  targetMz: number
-  ppmWindow: number
-  charge: number
-  maxResults?: number
-}
-
-export interface FormulaCandidate {
-  formula: string
-  exactMass: number
-  mz: number
-  ppmError: number
-}
-
-export function enumerateFormulas(options: FormulaSearchOptions): FormulaCandidate[] {
-  const {
-    elements,
-    minCounts,
-    maxCounts,
-    targetMz,
-    ppmWindow,
-    charge,
-    maxResults = 100,
-  } = options
-
-  if (!Number.isFinite(targetMz) || targetMz <= 0) return []
-  if (!Number.isFinite(ppmWindow) || ppmWindow <= 0) return []
-  if (!Number.isFinite(charge) || charge === 0) return []
-
-  // 这里假设 m/z 已经是带电物种的质量数除以 |z|
-  // 即带电物种质量 ≈ targetMz * |z|，不额外假设 [M + zH]⁺ 等加合形式
-  const absCharge = Math.abs(charge)
-  const neutralMass = targetMz * absCharge
-  if (neutralMass <= 0) return []
-
-  const delta = (ppmWindow / 1e6) * neutralMass
-  const minMass = neutralMass - delta
-  const maxMass = neutralMass + delta
-
-  const sortedElements = [...elements].sort(
-    (a, b) => ELEMENT_MASSES[a] - ELEMENT_MASSES[b],
-  )
-
-  const results: FormulaCandidate[] = []
-  const counts: Record<string, number> = {}
-
-  const dfs = (index: number, currentMass: number) => {
-    if (results.length >= maxResults) return
-
-    if (index === sortedElements.length) {
-      if (currentMass >= minMass && currentMass <= maxMass) {
-        const formula = sortedElements
-          .map((el) => {
-            const n = counts[el] ?? 0
-            if (n === 0) return ''
-            return n === 1 ? el : `${el}${n}`
-          })
-          .filter(Boolean)
-          .join('')
-
-        if (!formula) return
-
-        const mz = currentMass / absCharge
-        const ppmError = calculatePpmError(targetMz, mz)
-
-        results.push({
-          formula,
-          exactMass: currentMass,
-          mz,
-          ppmError,
-        })
+        candidates.push({ formula: finalFormula, exactMass, mz, ppmError, rdb });
       }
-      return
+      return;
     }
 
-    const el = sortedElements[index]
-    const mass = ELEMENT_MASSES[el]
-    const maxCount = maxCounts[el] ?? 0
+    const element = sortedElements[elementIndex];
+    const maxCount = Number(maxCounts[element] || 0);
+    const elementMass = ATOMIC_MASSES[element] || 0;
 
-    // 预估后续元素的最大质量，用于剪枝
-    let remainingMaxMass = 0
-    for (let i = index + 1; i < sortedElements.length; i++) {
-      const e = sortedElements[i]
-      const m = ELEMENT_MASSES[e]
-      const c = maxCounts[e] ?? 0
-      remainingMaxMass += m * c
-    }
-
-    for (let n = 0; n <= maxCount; n++) {
-      const newMass = currentMass + n * mass
-      if (newMass > maxMass) break
-
-      if (newMass + remainingMaxMass < minMass) {
-        continue
-      }
-
-      counts[el] = n
-      dfs(index + 1, newMass)
+    for (let i = maxCount; i >= 0; i--) {
+      currentCounts[element] = i;
+      search(elementIndex + 1, currentCounts, currentMass + i * elementMass);
     }
   }
 
-  dfs(0, 0)
+  search(0, {}, 0);
+  candidates.sort((a, b) => Math.abs((a.ppmError || 0)) - Math.abs((b.ppmError || 0)));
+  return candidates.slice(0, maxResults);
+};
 
-  const filtered = results.filter((candidate) => {
-    // 应用最小元素组成约束：每个元素的计数需 >= 指定最小值
-    const parsed = parseFormula(candidate.formula)
-    for (const [el, min] of Object.entries(minCounts)) {
-      if (min > 0 && (parsed[el] ?? 0) < min) {
-        return false
-      }
-    }
-    return true
-  })
+/* Helper: safe number formatter */
+export const formatNumber = (num, precision = 4) => {
+  if (!Number.isFinite(Number(num))) return '-';
+  return Number(num).toFixed(precision);
+};
 
-  filtered.sort((a, b) => Math.abs(a.ppmError) - Math.abs(b.ppmError))
-  return filtered.slice(0, maxResults)
-}
+/* Helper: format ppm with sign */
+export const formatPpm = (ppm, precision = 2) => {
+  if (ppm === null || ppm === undefined || !Number.isFinite(Number(ppm))) return '-';
+  const p = Number(ppm);
+  const sign = p > 0 ? '+' : '';
+  return sign + p.toFixed(precision);
+};
 
+/* Add calculatePpmError to match imports used elsewhere */
+export const calculatePpmError = (theoreticalMz, observedMz) => {
+  const t = Number(theoreticalMz);
+  const o = Number(observedMz);
+  if (!Number.isFinite(t) || !Number.isFinite(o) || o === 0) return null;
+  return ((t - o) / o) * 1e6;
+};
 
+/* Type doc for reference */
+/**
+ * @typedef {object} FormulaCandidate
+ * @property {string} formula
+ * @property {number} exactMass
+ * @property {number} mz
+ * @property {number|null} ppmError
+ * @property {number | string} rdb
+ */

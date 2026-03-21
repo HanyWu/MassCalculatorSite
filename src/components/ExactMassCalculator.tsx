@@ -1,148 +1,135 @@
-import type { FormEvent } from 'react'
-import { useState } from 'react'
+// src/components/MassCalculator.jsx (FINAL and FIXED version)
+
+import { useState, useMemo } from 'react';
+import type { FormEvent } from 'react';
 import {
+  parseFormula,
   calculateExactMass,
-  calculatePpmError,
-  calculateTheoreticalMz,
   formatNumber,
   formatPpm,
-} from '../utils/massUtils'
+  PROTON_MASS,
+} from '../utils/massUtils';
 
-interface ExactMassResults {
-  exactMass: number | null
-  mz: number | null
-  ppm: number | null
-}
+export const MassCalculator = () => {
+  const [formula, setFormula] = useState('H2O');
+  const [charge, setCharge] = useState('1');
+  const [observedMz, setObservedMz] = useState('');
+  const [useProton, setUseProton] = useState(true);
 
-export const ExactMassCalculator = () => {
-  const [formula, setFormula] = useState('')
-  const [charge, setCharge] = useState('1')
-  const [neutralLoss, setNeutralLoss] = useState('')
-  const [observedMz, setObservedMz] = useState('')
-  const [results, setResults] = useState<ExactMassResults>({
-    exactMass: null,
-    mz: null,
-    ppm: null,
-  })
-  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  const canUseProton = useMemo(() => Number.parseInt(charge, 10) !== 0, [charge]);
 
   const handleSubmit = (event: FormEvent) => {
-    event.preventDefault()
+    event.preventDefault();
+    setError('');
+    setResult(null);
+
+    if (!formula.trim()) {
+      setError('请输入一个化学式');
+      return;
+    }
 
     try {
-      setError(null)
-
-      if (!formula.trim()) {
-        throw new Error('请输入分子式，例如 C6H12O6')
+      // 关键修正：检查返回的普通对象是否为空
+      const parsed = parseFormula(formula);
+      if (Object.keys(parsed).length === 0) {
+        throw new Error('请输入有效的分子式');
       }
 
-      const z = Number.parseInt(charge, 10)
-      if (!Number.isFinite(z) || z === 0) {
-        throw new Error('电荷数必须为非零整数（正离子请输入正数）')
+      const exactMass = calculateExactMass(formula);
+      const z = Number.parseInt(charge, 10);
+      let ionMass = exactMass;
+
+      // 根据选项处理加合离子
+      if (canUseProton && useProton) {
+        ionMass += PROTON_MASS * z;
       }
 
-      const neutralLossMass = neutralLoss.trim() ? Number.parseFloat(neutralLoss) : 0
-      if (Number.isNaN(neutralLossMass) || neutralLossMass < 0) {
-        throw new Error('中性丢失质量必须为非负数字')
-      }
+      const mz = Number.isFinite(z) && z !== 0 ? ionMass / Math.abs(z) : ionMass;
 
-      const exactMass = calculateExactMass(formula)
-      const mz = calculateTheoreticalMz({
+      let ppmError = null;
+      const obsMz = Number.parseFloat(observedMz);
+      if (Number.isFinite(obsMz) && obsMz > 0) {
+        // observed = obsMz, theoretical = mz
+        ppmError = ((obsMz - mz) / mz) * 1e6;
+      }
+      
+      setResult({
         formula,
-        charge: z,
-        neutralLossMass,
-      })
+        exactMass,
+        ionMass,
+        mz,
+        ppmError,
+      });
 
-      let ppm: number | null = null
-      if (observedMz.trim()) {
-        const obs = Number.parseFloat(observedMz)
-        if (Number.isNaN(obs)) {
-          throw new Error('观测 m/z 必须为数字')
-        }
-        ppm = calculatePpmError(obs, mz)
-      }
-
-      setResults({ exactMass, mz, ppm })
     } catch (e) {
-      const message = e instanceof Error ? e.message : '计算时出现未知错误'
-      setError(message)
-      setResults({ exactMass: null, mz: null, ppm: null })
+      const message = e instanceof Error ? e.message : '计算时发生未知错误';
+      setError(message);
     }
-  }
+  };
 
   return (
     <section className="card">
       <div className="card-header">
         <div>
-          <h2 className="card-title">精确质量 &amp; 理论 m/z</h2>
+          <h2 className="card-title">精确质量计算器</h2>
           <p className="card-subtitle">
-            输入分子式、电荷及中性丢失，可选观测 m/z，计算单同位素质量与 ppm 误差
+            计算中性质量、离子 m/z 和 ppm 误差
           </p>
         </div>
-        <span className="card-badge">Calculator</span>
       </div>
 
-      <form onSubmit={handleSubmit}>
-        <div className="form-grid">
+      <form onSubmit={handleSubmit} noValidate>
+        <div className="form-grid" style={{ gridTemplateColumns: '2fr 1fr 1fr 1.5fr' }}>
           <div className="field">
-            <label className="field-label">
-              分子式 <span>*</span>
-            </label>
+            <label className="field-label">分子式 *</label>
             <input
               className="input"
-              placeholder="例如：C6H12O6"
               value={formula}
               onChange={(e) => setFormula(e.target.value)}
+              placeholder="例如: C6H12O6"
             />
-            <p className="field-description">
-              当前支持元素：C, H, N, O, S, P, F, Cl, Br, I, Na, K。
-            </p>
           </div>
 
-          <div className="field">
-            <label className="field-label">
-              电荷数 z <span>*</span>
+          <div className="field" style={{ justifyContent: 'center', marginTop: '1.2rem' }}>
+            <label style={{ display: 'flex', alignItems: 'center', cursor: canUseProton ? 'pointer' : 'not-allowed' }}>
+              <input
+                type="checkbox"
+                checked={canUseProton && useProton}
+                disabled={!canUseProton}
+                onChange={(e) => setUseProton(e.target.checked)}
+                style={{ marginRight: '0.5rem', transform: 'scale(1.2)' }}
+              />
+              <span style={{ color: canUseProton ? 'inherit' : '#aaa' }}>
+                使用 H⁺ 作为电荷载体
+                <p style={{ fontSize: '0.8rem', color: '#888' }}>电荷为0时此选项无效。</p>
+              </span>
             </label>
-            <div className="field-input-row">
-              <input
-                className="input-number"
-                type="number"
-                step={1}
-                value={charge}
-                onChange={(e) => setCharge(e.target.value)}
-              />
-              <span className="suffix">正离子请输入正数</span>
-            </div>
           </div>
 
           <div className="field">
-            <label className="field-label">中性丢失质量</label>
-            <div className="field-input-row">
-              <input
-                className="input-number"
-                type="number"
-                step="0.000001"
-                placeholder="可选，例如 H₂O ≈ 18.0106"
-                value={neutralLoss}
-                onChange={(e) => setNeutralLoss(e.target.value)}
-              />
-              <span className="suffix">Da</span>
-            </div>
+            <label className="field-label">电荷数 z *</label>
+            <input
+              className="input-number"
+              type="number"
+              step={1}
+              value={charge}
+              onChange={(e) => setCharge(e.target.value)}
+            />
           </div>
 
           <div className="field">
-            <label className="field-label">观测 m/z</label>
-            <div className="field-input-row">
-              <input
-                className="input-number"
-                type="number"
-                step="0.000001"
-                placeholder="可选，用于计算 ppm 误差"
-                value={observedMz}
-                onChange={(e) => setObservedMz(e.target.value)}
-              />
-              <span className="suffix">m/z</span>
-            </div>
+            <label className="field-label">观测值 (m/z 或 Da) (可选)</label>
+            <input
+              className="input-number"
+              type="number"
+              step="any"
+              value={observedMz}
+              onChange={(e) => setObservedMz(e.target.value)}
+              placeholder="用于计算 ppm 误差"
+            />
           </div>
         </div>
 
@@ -154,29 +141,41 @@ export const ExactMassCalculator = () => {
 
       {error && <div className="error-text">{error}</div>}
 
-      <div className="results">
-        <div>
-          <div className="result-item-label">单同位素精确质量</div>
-          <div className="result-item-value">{formatNumber(results.exactMass, 6)} Da</div>
+      {result && (
+        <div className="result-table-container">
+          <table className="result-table">
+            <thead>
+              <tr>
+                <th>参数</th>
+                <th>计算值</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td data-label="参数">中性分子质量 (Da)</td>
+                <td data-label="计算值">{formatNumber(result.exactMass, 6)}</td>
+              </tr>
+              <tr>
+                <td data-label="参数">离子质量 (Da)</td>
+                <td data-label="计算值">{formatNumber(result.ionMass, 6)}</td>
+              </tr>
+              <tr>
+                <td data-label="参数">理论 m/z</td>
+                <td data-label="计算值">{formatNumber(result.mz, 6)}</td>
+              </tr>
+              {result.ppmError !== null && (
+                <tr>
+                  <td data-label="参数">质量误差 (ppm)</td>
+                  <td data-label="计算值">{formatPpm(result.ppmError, 2)}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-        <div>
-          <div className="result-item-label">理论 m/z</div>
-          <div className="result-item-value">{formatNumber(results.mz, 6)}</div>
-          <div className="result-item-extra">近似按 [M + zH]⁺，可选减去中性丢失</div>
-        </div>
-        <div>
-          <div className="result-item-label">ppm 误差</div>
-          <div className="result-item-value">
-            {results.ppm !== null ? `${formatPpm(results.ppm)} ppm` : <span className="muted">--</span>}
-          </div>
-          <div className="result-item-extra">需提供观测 m/z 才能计算</div>
-        </div>
-      </div>
-
-      <p className="hint-text">
-        建议输入经过质量校准后的高分辨质谱数据。若需要考虑带钠、带钾等加合物，可在未来版本中加入更多加合模型。
-      </p>
+      )}
     </section>
-  )
-}
+  );
+};
 
+export const ExactMassCalculator = MassCalculator;
+export default MassCalculator;
